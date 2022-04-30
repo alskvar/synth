@@ -9,4 +9,5 @@ module com.example.synthfx {
 
     opens com.example.synthfx to javafx.fxml;
     exports com.example.synthfx;
+    exports ui.gui;
 }
