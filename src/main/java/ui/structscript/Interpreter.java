@@ -8,8 +8,6 @@ import synthesizer.sources.voices.Voice;
 import ui.UtilityFileException;
 import ui.UtilityFilesReader;
 
-import java.io.File;
-import java.io.FileNotFoundException;
 import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
@@ -133,11 +131,13 @@ public class Interpreter {
             voiceObjects.get("trigger")[i] = trigger;
             voices[i] = new Voice(pitch, velocity, aftertouch, releaseVelocity, gate, trigger);
         }
-        synth = new VoiceDistributor(voices, output, last);
+        Socket outputGain = new Socket(1);
+        objects.put("outputGain", outputGain);
+        synth = new VoiceDistributor(voices, output.attenuate(outputGain).clipBi(), last);
         objects.put("voiceMix", new Mixer(voiceOutputs));
     }
 
-    public VoiceDistributor getSynth() {
+    public VoiceDistributor getVoiceDistributor() {
         return synth;
     }
 
@@ -507,25 +507,6 @@ public class Interpreter {
 
     private void handleAST(Node ast, EditMode mode) throws InterpretationException {
         switch (ast.type()) {
-            case LOAD:
-                String path = ast.text();
-                File file = new File("patches/" + path);
-                try {
-                    Scanner reader = new Scanner(file);
-                    StringBuilder code = new StringBuilder();
-                    while (reader.hasNextLine())
-                        code.append(reader.nextLine()).append("\n");
-                    List<Node> asts;
-                    try {
-                        asts = new Parser(new Lexer(code.toString()).lex()).parse();
-                        interpret(asts);
-                    } catch (StructScriptException e) {
-                        throw new InterpretationException("error during loading \"" + path + "\":\n" + e.getStructScriptMessage());
-                    }
-                } catch (FileNotFoundException e) {
-                    throw new InterpretationException("no such file found");
-                }
-                break;
             case MODE_CHANGE:
                 if (ast.info() == "v")
                     editMode = VOICE;
@@ -561,14 +542,8 @@ public class Interpreter {
         }
     }
 
-    public boolean run(String code) {
-        try {
-            List<Node> asts = new Parser(new Lexer(code).lex()).parse();
-            interpret(asts);
-            return true;
-        } catch (StructScriptException e) {
-            System.out.println(e.getStructScriptMessage());
-            return false;
-        }
+    public void run(String code) throws StructScriptException {
+        List<Node> asts = new Parser(new Lexer(code).lex()).parse();
+        interpret(asts);
     }
 }

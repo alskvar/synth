@@ -1,12 +1,14 @@
 package ui.cui;
 
+import database.NoSuchSynthException;
 import sequencer.Sequencer;
+import synthesizer.TimeDependent;
 import synthesizer.sources.SignalSource;
 import synthesizer.sources.utils.Mixer;
-import ui.SynthMidiReceiver;
+import synthesizer.sources.utils.SourceValue;
 import ui.structscript.Interpreter;
+import ui.structscript.StructScriptException;
 import ui.synthcontrollers.AutoMapSynthController;
-import ui.synthcontrollers.SynthController;
 
 import javax.sound.midi.*;
 import java.io.File;
@@ -14,26 +16,22 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 
+import static database.Database.getSynthStructure;
+import static java.lang.Math.min;
 import static javax.sound.midi.MidiSystem.getSequence;
+import static ui.SynthMidiReceiver.channels;
 
-public class ConsoleHandler {
-
-    final int channels = 16;
+public class ConsoleHandler implements TimeDependent {
 
     int editedChannel = -1;
-    SynthMidiReceiver midiReceiver;
+    AutoMapSynthMidiReceiver midiReceiver;
     Interpreter[] builders = new Interpreter[channels];
     Sequencer[] sequencers = new Sequencer[channels];
 
-    AutoMapSynthController[][] synths = new AutoMapSynthController[channels][];
-
-    {
-        for (int i = 0; i < channels; ++i)
-            synths[i] = new AutoMapSynthController[0];
-    }
-
+    SourceValue mixGain = new SourceValue("mix gain", 0.5);
+    SourceValue masterVolume = new SourceValue("master volume", 0.3);
     Mixer mix = new Mixer(channels);
-    SignalSource clippedMix = mix.clipBi();
+    SignalSource clippedMix = mix.attenuate(mixGain).clipBi().attenuate(masterVolume);
 
 
     public void samplePassed(){
@@ -41,7 +39,7 @@ public class ConsoleHandler {
     }
 
     ConsoleHandler() {
-        midiReceiver = new SynthMidiReceiver(synths);
+        midiReceiver = new AutoMapSynthMidiReceiver();
         MidiDevice device;
         MidiDevice.Info[] infos = MidiSystem.getMidiDeviceInfo();
         for (MidiDevice.Info info : infos) {
@@ -97,6 +95,12 @@ public class ConsoleHandler {
             }
             return;
         }
+        if (command.matches("master volume set +[0-9]+(.[0-9]+)?")){
+            double new_volume = Double.parseDouble(command.substring(17).trim());
+            new_volume = min(new_volume, 1);
+            masterVolume.setValue(new_volume);
+            return;
+        }
         if(editedChannel == -1){
             System.out.println("choose channel to edit first");
             return;
@@ -106,31 +110,31 @@ public class ConsoleHandler {
             sequencers[editedChannel].play(notes);
             return;
         }
-        if(command.matches("press +[0-9]+")){
-            int note = Integer.parseInt(command.substring(5).trim());
-            if(note < 0 || note > 127){
-                System.out.println("wrong note");
-                return;
-            }
-            for(SynthController synth : synths[editedChannel])
-                synth.noteOn(note);
-            return;
-        }
-        if(command.matches("depress")){
-            for(SynthController synth : synths[editedChannel])
-                synth.allNotesOff();
-            return;
-        }
-        if(command.matches("depress +[0-9]+")){
-            int note = Integer.parseInt(command.substring(7).trim());
-            if(note < 0 || note > 127){
-                System.out.println("wrong note");
-                return;
-            }
-            for(SynthController synth : synths[editedChannel])
-                synth.noteOff(note);
-            return;
-        }
+//        if(command.matches("press +[0-9]+")){
+//            int note = Integer.parseInt(command.substring(5).trim());
+//            if(note < 0 || note > 127){
+//                System.out.println("wrong note");
+//                return;
+//            }
+//            for(SynthController synth : synths.get(editedChannel))
+//                synth.noteOn(note);
+//            return;
+//        }
+//        if(command.matches("depress")){
+//            for(SynthController synth : synths.get(editedChannel))
+//                synth.allNotesOff();
+//            return;
+//        }
+//        if(command.matches("depress +[0-9]+")){
+//            int note = Integer.parseInt(command.substring(7).trim());
+//            if(note < 0 || note > 127){
+//                System.out.println("wrong note");
+//                return;
+//            }
+//            for(SynthController synth : synths.get(editedChannel))
+//                synth.noteOff(note);
+//            return;
+//        }
         if (command.matches("create +[0-9]+")) {
             try {
                 int voiceCount = Integer.parseInt(command.substring(6).trim());
@@ -140,8 +144,9 @@ public class ConsoleHandler {
                 }
                 CCSourceValuesHandler handler = new CCSourceValuesHandler();
                 builders[editedChannel] = new Interpreter(voiceCount, handler);
-                mix.get(editedChannel).bind(builders[editedChannel].getSynth());
-                synths[editedChannel] = new AutoMapSynthController[]{new AutoMapSynthController(builders[editedChannel].getSynth(), handler)};
+                mix.get(editedChannel).bind(builders[editedChannel].getVoiceDistributor());
+                midiReceiver.clearSynthControllers(editedChannel);
+                midiReceiver.addSynthController(editedChannel, new AutoMapSynthController(builders[editedChannel].getVoiceDistributor(), handler));
                 return;
             } catch (NumberFormatException e) {
                 System.out.println("wrong voice count format");
@@ -149,20 +154,35 @@ public class ConsoleHandler {
             }
         }
         if (command.matches("map")) {
-            for(AutoMapSynthController synth : synths[editedChannel])
-                synth.startMapping();
+            midiReceiver.startMapping(editedChannel);
             return;
         }
         if (command.matches("stop +map")) {
-            for(AutoMapSynthController synth : synths[editedChannel])
-                synth.stopMapping();
+            midiReceiver.stopMapping(editedChannel);
             return;
         }
         if (builders[editedChannel] == null) {
             System.out.println("synth on channel " + (editedChannel + 1) + " is not created");
             return;
         }
-        builders[editedChannel].run(command);
+        if(command.matches("load +\".*\"")){
+            String name = command.substring(5).trim().substring(1);
+            name = name.substring(0, name.length()-1);
+            try {
+                builders[editedChannel].run(getSynthStructure(name));
+            } catch (NoSuchSynthException e) {
+                System.out.println("no such synth \"" + name + "\"");
+            } catch (StructScriptException e) {
+                System.out.println("error occurred in synth \"" + name + "\"");
+                System.out.println(e.getStructScriptMessage());
+            }
+            return;
+        }
+        try {
+            builders[editedChannel].run(command);
+        } catch (StructScriptException e) {
+            System.out.println(e.getStructScriptMessage());
+        }
     }
 
     SignalSource getMix() {

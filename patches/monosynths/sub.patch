@@ -1,9 +1,0 @@
-load "lastnotemonoinit.patch"
-
-env = new AR(1ms, 5ms)
-env.gate <= gate
-
-osc = new Tri(pitch)
-osc * env * volume => output
-
-volume := 0.1
